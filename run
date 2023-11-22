@@ -1,2 +1,119 @@
-#!/usr/bin/env python
-print('Hello World')
+import os
+import platform
+import argparse
+from dataclasses import dataclass
+
+
+@dataclass
+class Arguments:
+    initialization: bool
+    production: bool
+    development: bool
+    test: bool
+    coverage: bool
+
+    docker_build: bool
+    docker_run: bool
+    docker_logs: bool
+    docker_stop: bool
+    docker_push: bool
+
+    show_all_test: bool
+    path: str
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Python startup script')
+
+    # single mode
+    parser.add_argument('-i', '--initialization',	dest='initialization', 	action='store_true', help='Create a virtual environment with pyenv and install all packages')
+    parser.add_argument('-p', '--production',		dest='production', 		action='store_true', help='Run the program using formal environment settings')
+    parser.add_argument('-d', '--development', 		dest='development', 	action='store_true', help='Run the program using development environment settings')
+    parser.add_argument('-t', '--test', 			dest='test', 			action='store_true', help='Run test with pytest')
+    parser.add_argument('-c', '--coverage', 		dest='coverage', 		action='store_true', help='Run test with pytest and get code coverage')
+
+    # docker mode
+    parser.add_argument('-db','--docker-build',		dest='docker_build',	action='store_true', help='Build the docker image')
+    parser.add_argument('-dr','--docker-run',		dest='docker_run', 		action='store_true', help='Run the docker image')
+    parser.add_argument('-dl','--docker-logs',		dest='docker_logs', 	action='store_true', help='Follow docker log starting from the last 1000 lines')
+    parser.add_argument('-ds','--docker-stop',		dest='docker_stop',		action='store_true', help='Stop the docker container and remove it')
+    parser.add_argument('-dp','--docker-push',		dest='docker_push',		action='store_true', help='Push this docker image to docker hub')
+
+    # further argument
+    parser.add_argument('-s', '--show-all-test',	dest='show_all_test',   action='store_true', help='Show all test output')
+    parser.add_argument('--path', 					dest='path', 			type=str, default='', help='Specify the execution path of the program')
+    
+    arguments = parser.parse_args(namespace=Arguments)
+    if not arguments.initialization:
+        from dotenv import load_dotenv
+        load_dotenv()
+    if not arguments.initialization and not arguments.docker_build and not arguments.docker_run:
+        os.chdir(f'{os.getcwd()}/{os.environ["SOURCE_CODE_PATH"]}')
+
+
+    if arguments.initialization:
+        python = 'python3'
+        if os.system('python --version') == 0:
+            python = 'python'
+
+        if not os.path.exists(f'./env'):
+            if os.system(f'{python} -m venv env') == 0:
+                print('[Initializer] Create a virtual environment successfully')
+            else:
+                raise Exception(f'Failed to initialize, please install venv')
+        
+        exit_code = os.system(f'{". ./env/bin/activate" if (platform.system() != "Windows") else "env/Scripts/activate.bat"}  &&  pip install -r requirements.txt')
+        if exit_code == 0:
+            print('[Initializer] Install all packages successfully')
+        else:
+            raise Exception(f'Failed to initialize, please do it manually')
+        print('Please enter the virtual environment for software development. "source env/bin/activate"')
+
+    elif arguments.test:
+        os.environ['ENV'] = 'test'
+        if arguments.path:
+            os.system(f'pytest {arguments.path} {"-vv" if arguments.show_all_test else ""} -rp -p no:warnings --capture=no')
+        else:
+            os.system(f'pytest -p no:warnings --capture=no')
+    elif arguments.coverage:
+        os.environ['ENV'] = 'test'
+        os.system(f'pytest {arguments.path} -p no:warnings --capture=no --cov=./{arguments.path} --cov-config=../.coveragerc --cov-report term-missing')
+
+    elif arguments.docker_build or arguments.docker_run or arguments.docker_logs or arguments.docker_stop or arguments.docker_push:
+        if os.system('docker --version') != 0:
+            print('Failed to run docker, please install docker first')
+        else:
+            def get_docker_repository() -> str:
+                return f'{os.environ["DOCKER_HUB_HOST"]}/{os.environ["DOCKER_PROJECT"]}/{os.environ["DOCKER_IMAGE"]}:{os.environ["DOCKER_TAG"]}'
+
+            if arguments.docker_stop:
+                exit_code = os.system(f'sudo docker stop {os.environ["DOCKER_IMAGE"]}')
+                if exit_code != 0:
+                    print('Failed to stop docker container')
+            if arguments.docker_build:
+                exit_code = os.system(f'sudo docker build --tag {get_docker_repository()} .')
+                if exit_code != 0:
+                    print('Failed to build docker image')
+            if arguments.docker_run:
+                exit_code = os.system(f'sudo docker run --name {os.environ["DOCKER_IMAGE"]} -p {os.environ["DOCKER_PORT"]}:{os.environ["PORT"]} -d --rm {get_docker_repository()}')
+                if exit_code != 0:
+                    print('Failed to run docker container')
+            if arguments.docker_logs:
+                exit_code = os.system(f'sudo docker logs -f --tail 1000 {os.environ["DOCKER_IMAGE"]}')
+                if exit_code != 0:
+                    print('Failed to view docker log')
+            if arguments.docker_push:
+                exit_code = os.system(f'sudo docker push {get_docker_repository()}')
+                if exit_code != 0:
+                    print('Failed to push docker image to docker hub')
+
+    elif arguments.development:
+        os.environ['ENV'] = 'development'
+        os.system(f'uvicorn server:CrawlerStateAPI --host {os.environ["HOST"]} --port {os.environ["PORT"]} --reload')
+    else:
+        os.environ['ENV'] = 'production'
+        os.system(f'uvicorn server:CrawlerStateAPI --host {os.environ["HOST"]} --port {os.environ["PORT"]}')
+        
+
+if __name__ == '__main__':
+    main()
