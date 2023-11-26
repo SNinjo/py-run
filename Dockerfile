@@ -1,10 +1,10 @@
-FROM python:3.12-slim
+FROM python:3.11-slim
 WORKDIR /app
 
-COPY ./requirements.txt requirements.txt
-RUN pip install -r requirements.txt
-
-COPY ./.env .env
 COPY ./run run
+COPY ./.env .env
+COPY ./requirements.txt requirements.txt
+RUN python run --initialization --server
+
 COPY ./src src
-CMD python run --production
+CMD python run --production --server

@@ -1,119 +1,238 @@
+import re
 import os
+import sys
 import platform
 import argparse
+import importlib
 from dataclasses import dataclass
+
+
+class EnvironmentParameter:
+    @staticmethod
+    def initialize() -> None:
+        if importlib.find_loader('dotenv') is None:
+            raise Exception('Please install python-dotenv first. \n>> pip install python-dotenv')
+        from dotenv import load_dotenv
+        load_dotenv()
+
+    @staticmethod
+    def get(key: str) -> str:
+        parameter = os.environ.get(key)
+        if not parameter:
+            raise Exception(f'Required parameter is missing, please add it to .env | key: "{key}"')
+        return parameter
+    
+    @staticmethod
+    def parse(string: str) -> str:
+        while True:
+            result = re.search(r'\{([^{}]+)\}', string)
+            if result:
+                parameter_name = result.group(1)
+                string = string.replace(f'{{{parameter_name}}}', EnvironmentParameter.get(parameter_name))
+            else:
+                return string
+
+class Command:
+    root_directory_path: str = os.getcwd()
+    working_directory: str
+    virtual_environment_directory: str
+
+    @staticmethod
+    def initialize(working_directory: str, virtual_environment_directory: str) -> None:
+        Command.working_directory = working_directory
+        Command.virtual_environment_directory = virtual_environment_directory
+
+    @staticmethod
+    def get_running_virtual_environment() -> str:
+        virtual_environment_path = os.path.join(Command.root_directory_path, Command.virtual_environment_directory)
+        if platform.system() == "Windows":
+            return f"{virtual_environment_path}\\Scripts\\activate"
+        else:
+            return f". ./{virtual_environment_path}/bin/activate"
+
+    @staticmethod
+    def is_valid(command: str) -> bool:
+        return os.system(command) == 0
+
+    @staticmethod
+    def execute(command: str, in_root_directory: bool = False, in_working_directory: bool = False, in_virtual_environment: bool = False) -> None:
+        if in_root_directory:
+            command = f'cd {Command.root_directory_path} && {command}'
+        if in_working_directory:
+            working_directory_path = os.path.join(Command.root_directory_path, Command.working_directory)
+            command = f'cd {working_directory_path} && {command}'
+        if in_virtual_environment:
+            command = f'{Command.get_running_virtual_environment()} && {command}'
+
+        exit_code = os.system(command)
+        if exit_code != 0:
+            raise Exception(f'Fail to execute command | exit code: {exit_code}, command: "{command}"')
+
+def set_working_directory(path: str) -> None:
+    os.chdir(path)
+
+def get_docker_repository() -> str:
+    return (
+        f'{EnvironmentParameter.get("DOCKER_HUB_HOST")}'
+        f'/{EnvironmentParameter.get("DOCKER_IMAGE")}'
+        f':{EnvironmentParameter.get("DOCKER_TAG")}'
+    )
 
 
 @dataclass
 class Arguments:
+    python: str
+
+    is_local_mode: bool
     initialization: bool
     production: bool
     development: bool
     test: bool
-    coverage: bool
 
+    server: bool
+    view_all_output: bool
+    coverage: bool
+    path: str
+
+    is_docker_mode: bool
+    docker_ps: bool
+    docker_image_ls: bool
     docker_build: bool
     docker_run: bool
     docker_logs: bool
     docker_stop: bool
     docker_push: bool
 
-    show_all_test: bool
-    path: str
-
-
-def main():
+def get_python_command_name() -> str:
+    return os.path.basename(sys.executable)
+def get_arguments():
     parser = argparse.ArgumentParser(description='Python startup script')
 
-    # single mode
+    # local mode
     parser.add_argument('-i', '--initialization',	dest='initialization', 	action='store_true', help='Create a virtual environment with pyenv and install all packages')
     parser.add_argument('-p', '--production',		dest='production', 		action='store_true', help='Run the program using formal environment settings')
     parser.add_argument('-d', '--development', 		dest='development', 	action='store_true', help='Run the program using development environment settings')
     parser.add_argument('-t', '--test', 			dest='test', 			action='store_true', help='Run test with pytest')
-    parser.add_argument('-c', '--coverage', 		dest='coverage', 		action='store_true', help='Run test with pytest and get code coverage')
+
+    # further argument
+    parser.add_argument('-s', '--server',			dest='server', 			action='store_true',
+        help='Deploy the program to the server, only available in initialization and production mode'
+    )
+    parser.add_argument('-v', '--view-all-output',	dest='view_all_output', action='store_true', help='Show all test output')
+    parser.add_argument('-c', '--coverage', 		dest='coverage', 		action='store_true', help='Show code coverage and skip the details')
+    parser.add_argument('--path', 					dest='path', 			type=str, default='',help='Specify the execution path of the program')
 
     # docker mode
+    parser.add_argument('-dps','--docker-ps',		dest='docker_ps',		action='store_true', help='Show all docker containers')
+    parser.add_argument('-dis','--docker-image-ls',	dest='docker_image_ls',	action='store_true', help='Show all docker images')
     parser.add_argument('-db','--docker-build',		dest='docker_build',	action='store_true', help='Build the docker image')
     parser.add_argument('-dr','--docker-run',		dest='docker_run', 		action='store_true', help='Run the docker image')
     parser.add_argument('-dl','--docker-logs',		dest='docker_logs', 	action='store_true', help='Follow docker log starting from the last 1000 lines')
     parser.add_argument('-ds','--docker-stop',		dest='docker_stop',		action='store_true', help='Stop the docker container and remove it')
     parser.add_argument('-dp','--docker-push',		dest='docker_push',		action='store_true', help='Push this docker image to docker hub')
-
-    # further argument
-    parser.add_argument('-s', '--show-all-test',	dest='show_all_test',   action='store_true', help='Show all test output')
-    parser.add_argument('--path', 					dest='path', 			type=str, default='', help='Specify the execution path of the program')
     
     arguments = parser.parse_args(namespace=Arguments)
-    if not arguments.initialization:
-        from dotenv import load_dotenv
-        load_dotenv()
-    if not arguments.initialization and not arguments.docker_build and not arguments.docker_run:
-        os.chdir(f'{os.getcwd()}/{os.environ["SOURCE_CODE_PATH"]}')
+    arguments.python = get_python_command_name()
+    arguments.is_docker_mode = (
+        arguments.docker_ps
+        or arguments.docker_image_ls
+        or arguments.docker_build
+        or arguments.docker_run
+        or arguments.docker_logs
+        or arguments.docker_stop
+        or arguments.docker_push
+	)
+    arguments.is_local_mode = (
+        arguments.initialization
+        or arguments.production
+        or arguments.development
+        or arguments.test
+	)
+    return arguments
 
 
-    if arguments.initialization:
-        python = 'python3'
-        if os.system('python --version') == 0:
-            python = 'python'
+def main():
+    arguments = get_arguments()
+    if arguments.server:
+        Command.execute('pip install python-dotenv')
+    elif importlib.find_loader('venv') is None:
+        raise Exception('Please install venv first.')
+    EnvironmentParameter.initialize()
+    Command.initialize(
+        working_directory=EnvironmentParameter.get('SOURCE_CODE_DIRECTORY'),
+        virtual_environment_directory=EnvironmentParameter.get('VIRTUAL_ENVIRONMENT_DIRECTORY')
+    )
+    if not arguments.is_local_mode or arguments.is_docker_mode:
+        raise Exception(f'Please select the operation mode. \n >> {get_python_command_name()} run -h')
+    if not arguments.initialization and not os.path.exists(EnvironmentParameter.get('VIRTUAL_ENVIRONMENT_DIRECTORY')):
+        raise Exception(f'Please initialize this project first. \n >> {get_python_command_name()} run -i')
 
-        if not os.path.exists(f'./env'):
-            if os.system(f'{python} -m venv env') == 0:
-                print('[Initializer] Create a virtual environment successfully')
-            else:
-                raise Exception(f'Failed to initialize, please install venv')
-        
-        exit_code = os.system(f'{". ./env/bin/activate" if (platform.system() != "Windows") else "env/Scripts/activate.bat"}  &&  pip install -r requirements.txt')
-        if exit_code == 0:
-            print('[Initializer] Install all packages successfully')
+
+    if arguments.is_local_mode:
+        if arguments.initialization:
+            if not arguments.server:
+                VIRTUAL_ENVIRONMENT_PATH = EnvironmentParameter.get('VIRTUAL_ENVIRONMENT_DIRECTORY')
+                if not os.path.exists(VIRTUAL_ENVIRONMENT_PATH):
+                    Command.execute(f'{arguments.python} -m venv {VIRTUAL_ENVIRONMENT_PATH}')
+
+            Command.execute('pip install python-dotenv coverage pytest-cov', in_virtual_environment=not arguments.server)
+            Command.execute('pip install -r requirements.txt', in_virtual_environment=not arguments.server)
         else:
-            raise Exception(f'Failed to initialize, please do it manually')
-        print('Please enter the virtual environment for software development. "source env/bin/activate"')
+            set_working_directory(EnvironmentParameter.get("SOURCE_CODE_DIRECTORY"))
 
-    elif arguments.test:
-        os.environ['ENV'] = 'test'
-        if arguments.path:
-            os.system(f'pytest {arguments.path} {"-vv" if arguments.show_all_test else ""} -rp -p no:warnings --capture=no')
-        else:
-            os.system(f'pytest -p no:warnings --capture=no')
-    elif arguments.coverage:
-        os.environ['ENV'] = 'test'
-        os.system(f'pytest {arguments.path} -p no:warnings --capture=no --cov=./{arguments.path} --cov-config=../.coveragerc --cov-report term-missing')
+            if arguments.production:
+                os.environ[EnvironmentParameter.get('ENVIRONMENT_NAME')] = 'production'
+                Command.execute(
+                    EnvironmentParameter.parse(EnvironmentParameter.get('SCRIPT_PRODUCTION')),
+                    in_virtual_environment=not arguments.server,
+                    in_working_directory=True
+                )
+            elif arguments.development:
+                os.environ[EnvironmentParameter.get('ENVIRONMENT_NAME')] = 'development'
+                Command.execute(
+                    EnvironmentParameter.parse(EnvironmentParameter.get('SCRIPT_DEVELOPMENT')),
+                    in_virtual_environment=True,
+                    in_working_directory=True
+                )
+            elif arguments.test:
+                os.environ[EnvironmentParameter.get('ENVIRONMENT_NAME')] = 'test'
+                if arguments.coverage:
+                    Command.execute(
+                        f'pytest {arguments.path} -p no:warnings --capture=no --cov=./{arguments.path} --cov-config=../.coveragerc --cov-report term-missing',
+                        in_virtual_environment=True,
+                    	in_working_directory=True
+                    )
+                else:
+                    Command.execute(
+                        f'pytest {arguments.path} {"-vv" if arguments.view_all_output else ""} -rp -p no:warnings --capture=no',
+                        in_virtual_environment=True,
+                    	in_working_directory=True
+                    )
 
-    elif arguments.docker_build or arguments.docker_run or arguments.docker_logs or arguments.docker_stop or arguments.docker_push:
-        if os.system('docker --version') != 0:
+    elif arguments.is_docker_mode:
+        if not Command.is_valid('docker --version'):
             print('Failed to run docker, please install docker first')
-        else:
-            def get_docker_repository() -> str:
-                return f'{os.environ["DOCKER_HUB_HOST"]}/{os.environ["DOCKER_PROJECT"]}/{os.environ["DOCKER_IMAGE"]}:{os.environ["DOCKER_TAG"]}'
+            return
 
-            if arguments.docker_stop:
-                exit_code = os.system(f'sudo docker stop {os.environ["DOCKER_IMAGE"]}')
-                if exit_code != 0:
-                    print('Failed to stop docker container')
-            if arguments.docker_build:
-                exit_code = os.system(f'sudo docker build --tag {get_docker_repository()} .')
-                if exit_code != 0:
-                    print('Failed to build docker image')
-            if arguments.docker_run:
-                exit_code = os.system(f'sudo docker run --name {os.environ["DOCKER_IMAGE"]} -p {os.environ["DOCKER_PORT"]}:{os.environ["PORT"]} -d --rm {get_docker_repository()}')
-                if exit_code != 0:
-                    print('Failed to run docker container')
-            if arguments.docker_logs:
-                exit_code = os.system(f'sudo docker logs -f --tail 1000 {os.environ["DOCKER_IMAGE"]}')
-                if exit_code != 0:
-                    print('Failed to view docker log')
-            if arguments.docker_push:
-                exit_code = os.system(f'sudo docker push {get_docker_repository()}')
-                if exit_code != 0:
-                    print('Failed to push docker image to docker hub')
+        if arguments.docker_stop:
+            Command.execute(f'sudo docker stop {EnvironmentParameter.get("DOCKER_IMAGE")}')
+        if arguments.docker_build:
+            Command.execute(f'sudo docker build --tag {get_docker_repository()}')
+        if arguments.docker_run:
+            Command.execute(
+                f'sudo docker run --name {EnvironmentParameter.get("DOCKER_IMAGE")}'
+                f'-p {EnvironmentParameter.get("DOCKER_PORT")}:{EnvironmentParameter.get("PORT")}'
+                f'-d --rm {get_docker_repository()}'
+            )
+        if arguments.docker_push:
+            Command.execute(f'sudo docker push {get_docker_repository()}')
+        if arguments.docker_ps:
+            Command.execute(f'sudo docker ps')
+        if arguments.docker_image_ls:
+            Command.execute(f'sudo docker image ls')
+        if arguments.docker_logs:
+            Command.execute(f'sudo docker logs -f --tail 1000 {EnvironmentParameter.get("DOCKER_IMAGE")}')
 
-    elif arguments.development:
-        os.environ['ENV'] = 'development'
-        os.system(f'uvicorn server:CrawlerStateAPI --host {os.environ["HOST"]} --port {os.environ["PORT"]} --reload')
-    else:
-        os.environ['ENV'] = 'production'
-        os.system(f'uvicorn server:CrawlerStateAPI --host {os.environ["HOST"]} --port {os.environ["PORT"]}')
-        
 
 if __name__ == '__main__':
     main()
