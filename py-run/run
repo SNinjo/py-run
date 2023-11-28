@@ -1,24 +1,24 @@
 import re
 import os
 import sys
-import platform
 import argparse
-import importlib
+import platform
+import importlib.util
 from dataclasses import dataclass
 
 
 class EnvironmentParameter:
     @staticmethod
     def initialize() -> None:
-        if importlib.find_loader('dotenv') is None:
+        if not is_package_installed('dotenv'):
             raise Exception('Please install python-dotenv first. \n>> pip install python-dotenv')
         from dotenv import load_dotenv
         load_dotenv()
 
     @staticmethod
-    def get(key: str) -> str:
-        parameter = os.environ.get(key)
-        if not parameter:
+    def get(key: str, can_be_empty: bool = False) -> str:
+        parameter = os.environ.get(key) or ''
+        if not can_be_empty and not parameter:
             raise Exception(f'Required parameter is missing, please add it to .env | key: "{key}"')
         return parameter
     
@@ -48,7 +48,7 @@ class Command:
         if platform.system() == "Windows":
             return f"{virtual_environment_path}\\Scripts\\activate"
         else:
-            return f". ./{virtual_environment_path}/bin/activate"
+            return f". {virtual_environment_path}/bin/activate"
 
     @staticmethod
     def is_valid(command: str) -> bool:
@@ -68,12 +68,19 @@ class Command:
         if exit_code != 0:
             raise Exception(f'Fail to execute command | exit code: {exit_code}, command: "{command}"')
 
+def is_package_installed(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
+
 def set_working_directory(path: str) -> None:
     os.chdir(path)
 
 def get_docker_repository() -> str:
+    docker_project = EnvironmentParameter.get('DOCKER_PROJECT', can_be_empty=True)
+    if docker_project:
+        docker_project = '/' + docker_project
     return (
         f'{EnvironmentParameter.get("DOCKER_HUB_HOST")}'
+        f'{docker_project}'
         f'/{EnvironmentParameter.get("DOCKER_IMAGE")}'
         f':{EnvironmentParameter.get("DOCKER_TAG")}'
     )
@@ -120,7 +127,7 @@ def get_arguments():
     )
     parser.add_argument('-v', '--view-all-output',	dest='view_all_output', action='store_true', help='Show all test output')
     parser.add_argument('-c', '--coverage', 		dest='coverage', 		action='store_true', help='Show code coverage and skip the details')
-    parser.add_argument('--path', 					dest='path', 			type=str, default='',help='Specify the execution path of the program')
+    parser.add_argument('--path', 					dest='path', 			type=str, default='',help='Specify the execution path of the program, only available in test mode')
 
     # docker mode
     parser.add_argument('-dps','--docker-ps',		dest='docker_ps',		action='store_true', help='Show all docker containers')
@@ -153,19 +160,18 @@ def get_arguments():
 
 def main():
     arguments = get_arguments()
-    if arguments.server:
-        Command.execute('pip install python-dotenv')
-    elif importlib.find_loader('venv') is None:
+    if not arguments.server and not is_package_installed('venv'):
         raise Exception('Please install venv first.')
-    EnvironmentParameter.initialize()
-    Command.initialize(
-        working_directory=EnvironmentParameter.get('SOURCE_CODE_DIRECTORY'),
-        virtual_environment_directory=EnvironmentParameter.get('VIRTUAL_ENVIRONMENT_DIRECTORY')
-    )
-    if not arguments.is_local_mode or arguments.is_docker_mode:
-        raise Exception(f'Please select the operation mode. \n >> {get_python_command_name()} run -h')
-    if not arguments.initialization and not os.path.exists(EnvironmentParameter.get('VIRTUAL_ENVIRONMENT_DIRECTORY')):
-        raise Exception(f'Please initialize this project first. \n >> {get_python_command_name()} run -i')
+    if not (arguments.initialization and arguments.server):
+        EnvironmentParameter.initialize()
+        Command.initialize(
+            working_directory=EnvironmentParameter.get('SOURCE_CODE_DIRECTORY'),
+            virtual_environment_directory=EnvironmentParameter.get('VIRTUAL_ENVIRONMENT_DIRECTORY')
+        )
+    if not arguments.is_local_mode and not arguments.is_docker_mode:
+        raise Exception(f'Please select the operation mode. \n >> {arguments.python} run -h')
+    if not arguments.server and not arguments.initialization and not os.path.exists(EnvironmentParameter.get('VIRTUAL_ENVIRONMENT_DIRECTORY')):
+        raise Exception(f'Please initialize this project first. \n >> {arguments.python} run -i')
 
 
     if arguments.is_local_mode:
@@ -217,12 +223,12 @@ def main():
         if arguments.docker_stop:
             Command.execute(f'sudo docker stop {EnvironmentParameter.get("DOCKER_IMAGE")}')
         if arguments.docker_build:
-            Command.execute(f'sudo docker build --tag {get_docker_repository()}')
+            Command.execute(f'sudo docker build . --tag {get_docker_repository()}')
         if arguments.docker_run:
             Command.execute(
                 f'sudo docker run --name {EnvironmentParameter.get("DOCKER_IMAGE")}'
-                f'-p {EnvironmentParameter.get("DOCKER_PORT")}:{EnvironmentParameter.get("PORT")}'
-                f'-d --rm {get_docker_repository()}'
+                f' -p {EnvironmentParameter.get("DOCKER_PORT")}:{EnvironmentParameter.get("PORT")}'
+                f' -d --rm {get_docker_repository()}'
             )
         if arguments.docker_push:
             Command.execute(f'sudo docker push {get_docker_repository()}')
